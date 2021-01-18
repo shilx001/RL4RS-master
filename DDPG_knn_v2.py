@@ -10,9 +10,9 @@ import pickle
 
 # DDPG-KNN
 np.random.seed(1)
-# data = pd.read_csv('ml-latest-small/ratings.csv')
+data = pd.read_csv('ml-latest-small/ratings.csv')
 # data = pd.read_table('ratings.dat',sep='::',names=['userId','movieId','rating','timestep'])
-data = pd.read_table('ml-1m/ml-1m/ratings.dat', sep='::', names=['userId', 'movieId', 'rating', 'timestep'])
+#data = pd.read_table('ml-1m/ml-1m/ratings.dat', sep='::', names=['userId', 'movieId', 'rating', 'timestep'])
 user_idx = data['userId'].unique()  # id for all the user
 np.random.shuffle(user_idx)
 train_id = user_idx[:int(len(user_idx) * 0.8)]
@@ -151,16 +151,15 @@ start_time = datetime.datetime.now()
 # TEST阶段
 result = []
 K = 100
-N = 50  # top-N evaluation
+N = 30  # top-N evaluation
 test_count = 0
 for idx1 in test_id:  # 针对test_id中的每个用户
     user_record = data[data['userId'] == idx1]
     user_watched_list = []
     user_rating_list = []
-    tp = 0
-    fp = 0
-    fn = 0
-    tn = 0
+    relevant = 0
+    recommend_relevant = 0
+    selected = 0
     r = 0
     all_state = []
     for idx2, row in user_record.iterrows():  # 针对每个电影记录
@@ -197,23 +196,21 @@ for idx1 in test_id:  # 针对test_id中的每个用户
             recommend_index = nearest_index[np.argsort(critic_value.flatten())[:N]]
             recommend_movie = list(movie_id[recommend_index])  # 转为list
             # 针对每个推荐item评估下
+            if row['rating']>3:
+                relevant += 1
+                if row['movieId'] in recommend_movie:
+                    recommend_relevant += 1
             if row['movieId'] in recommend_movie:
-                if row['rating'] > 3:
-                    tp += 1
-                else:
-                    fp += 1
-                r = normalize(row['rating'])
-            else:
-                if row['rating'] > 3:
-                    fn += 1
-                else:
-                    tn += 1
+                selected += 1
+                r += normalize(row['rating'])
     test_count += 1
+    precision = recommend_relevant/selected if selected is not 0 else 0
+    recall = recommend_relevant/relevant if relevant is not 0 else 0
     print('Test user #: ', test_count, '/', len(test_id))
-    print('Precision: ', tp / (tp + fp + 1e-8), ' Recall: ', tp / (tp + fn + 1e-8))
-    result.append([r, tp / (tp + fp + 1e-8), tp / (tp + fn + 1e-8)])
+    print('Precision: %.5f Recall: %.5f'%(precision,recall))
+    result.append([r, precision, recall])
 
-pickle.dump(result, open('ddpg_knn_v2', mode='wb'))
+pickle.dump(result, open('ddpg_knn', mode='wb'))
 print('Result:')
 print(np.mean(np.array(result).reshape([-1, 3]), axis=0))
 end_time = datetime.datetime.now()

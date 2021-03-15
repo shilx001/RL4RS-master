@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import datetime
-from ddpg_v2 import *
+from ddpg import *
 import math
 import pickle
 from funk_svd import SVD
@@ -12,24 +12,14 @@ from funk_svd import SVD
 # DDPG-KNN
 np.random.seed(1)
 data = pd.read_csv('ml-latest-small/ratings.csv', header=0, names=['u_id', 'i_id', 'rating', 'timestep'])
-#data = pd.read_table('ml-1m/ml-1m/ratings.dat', sep='::',  names=['u_id', 'i_id', 'rating', 'timestep'])
+# data = pd.read_table('ml-1m/ml-1m/ratings.dat', sep='::',  names=['u_id', 'i_id', 'rating', 'timestep'])
 user_idx = data['u_id'].unique()  # id for all the user
 np.random.shuffle(user_idx)
 train_id = user_idx[:int(len(user_idx) * 0.8)]
 test_id = user_idx[int(len(user_idx) * 0.8):]
 
-# 找出这种集合中总共有多少电影
-# 找出集合中有多少个电影。
-movie_id = []
-for idx1 in user_idx:  # 针对train_id中的每个用户
-    user_record = data[data['u_id'] == idx1]
-    for idx2, row in user_record.iterrows():
-        # 检查list中是否有该电影的id
-        if row['i_id'] in movie_id:
-            idx = movie_id.index(row['i_id'])  # 找到该位置
-        else:
-            # 否则新加入movie_id
-            movie_id.append(row['i_id'])
+# 找出集合中总共有多少电影
+movie_id = list(data['i_id'].unique())
 
 # 针对训练集建立user-rating matrix,构建item的feature matrix
 rating_mat = np.zeros([len(train_id), len(movie_id)])
@@ -56,8 +46,8 @@ def get_feature(input_id):
 
 
 # 根据item_id找出相应的动作
-BASE = 2  # 输出动作的进制
-output_action_dim = np.ceil(math.log(len(movie_id), BASE))  # DDPG输出动作的维度
+BASE = 5  # 输出动作的进制
+output_action_dim = int(np.ceil(math.log(len(movie_id), BASE)))  # DDPG输出动作的维度
 output_action_bound = 1.0 / BASE
 
 
@@ -69,13 +59,22 @@ def action_mapping(item_id):
     while item_id / BASE > 0:
         output_action.append(item_id % BASE)
         item_id = item_id // BASE
-    return np.hstack(
-        (np.array(output_action).flatten(), np.zeros([int(output_action_dim) - len(output_action)])))  # 针对不满的要补0
+    output_action = np.hstack(
+        (np.array(output_action).flatten(), np.zeros([int(output_action_dim) - len(output_action)])))
+    return output_action  # 针对不满的要补0
 
 
 def get_movie(movie_mask):
     # 根据电影编码得到电影的index
-    return np.sum(BASE ** np.cumsum(movie_mask))
+    # movie_mask: [N, output_action_dim]
+    d = BASE ** np.arange(output_action_dim)
+    return np.dot(movie_mask, d)
+
+
+def normalize(rating):
+    max_rating = 5
+    min_rating = 0
+    return -1 + 2 * (rating - min_rating) / (max_rating - min_rating)
 
 
 action_mask_set = []
@@ -85,7 +84,8 @@ for idx in movie_id:
 
 MAX_SEQ_LENGTH = 32
 agent = DDPG(state_dim=128 + 1, action_dim=int(output_action_dim), action_bound=output_action_bound,
-             max_seq_length=MAX_SEQ_LENGTH, batch_size=128)
+             max_seq_length=MAX_SEQ_LENGTH, batch_size=128, discount_factor=1)
+
 
 print('Start training.')
 start_time = datetime.datetime.now()
@@ -111,7 +111,7 @@ for id1 in train_id:
         current_state_length = i - 1
         next_state = state[:i]
         next_state_length = i
-        current_reward = reward[i]
+        current_reward = (reward[i])
         current_action = action[i]
         if current_state_length > MAX_SEQ_LENGTH:
             current_state = current_state[-MAX_SEQ_LENGTH:]
@@ -120,7 +120,7 @@ for id1 in train_id:
             next_state = next_state[-MAX_SEQ_LENGTH:]
             next_state_length = MAX_SEQ_LENGTH
         done = 0
-        if i+1 % 32 is 0:
+        if i % 32 is 0:
             done = 1
         agent.store(current_state, current_state_length, current_action, current_reward, next_state,
                     next_state_length, done)
@@ -143,19 +143,15 @@ print('Training time(seconds):', (end_time - start_time).seconds)
 pickle.dump(actor_loss_list, open('actor_loss_v2', mode='wb'))
 pickle.dump(critic_loss_list, open('critic_loss_v2', mode='wb'))
 
+
+
+
 print('Begin test.')
-
-
-def normalize(rating):
-    max_rating = 5
-    min_rating = 0
-    return -1 + 2 * (rating - min_rating) / (max_rating - min_rating)
-
 
 start_time = datetime.datetime.now()
 # TEST阶段
 result = []
-K = 10000
+K = 100
 N = 30  # top-N evaluation
 test_count = 0
 for idx1 in test_id:  # 针对test_id中的每个用户
@@ -182,8 +178,8 @@ for idx1 in test_id:  # 针对test_id中的每个用户
             dist = np.sqrt(np.sum(
                 (np.array(action_mask_set).reshape([-1, int(output_action_dim)]) - proto_action.flatten()) ** 2,
                 axis=1))
-            sorted_index = np.argsort(dist)
-            nearest_index = sorted_index[:K]
+            sorted_index = np.argsort(dist)  # 距离从小到大排列
+            nearest_index = sorted_index[:K]  # 找k个距离最近的动作，这个index是动作里面的index
             # 评估nearest_index的value
             eval_state = []
             eval_length = []
@@ -197,14 +193,15 @@ for idx1 in test_id:  # 针对test_id中的每个用户
                 eval_state.append(temp_state)
                 eval_action.append(np.array(action_mask_set[idx3]))
                 eval_length.append(temp_length)
-            critic_value = agent.eval_critic(eval_state, eval_length, eval_action)
+            critic_value = agent.eval_critic(eval_state, eval_length, eval_action)  # 评估所有动作里的
             # 推荐Q值最高的N个
             critic_value = critic_value.flatten()
-            temp_idx = np.argsort(-critic_value)[:N]
-            recommend_index = nearest_index[temp_idx]
-            recommend_movie = list(movie_id[recommend_index])  # 转为list
+            temp_idx = np.argsort(-critic_value)[:N]  # 找距离最近的N个
+            recommend_mask = [action_mask_set[_] for _ in nearest_index[temp_idx]]  # 最近index中Q值最大的几个
+            recommend_index = get_movie(np.reshape(recommend_mask, [-1, output_action_dim]))
+            recommend_movie = [movie_id[int(_)] for _ in recommend_index]  # 转为list
             # 针对每个推荐item评估下
-            if row['rating'] > 3:
+            if row['rating'] > 3.5:
                 relevant += 1
                 if row['i_id'] in recommend_movie:
                     recommend_relevant += 1

@@ -56,7 +56,7 @@ def get_movie_idx(input_id):
 # 根据item_id找出相应的动作
 dim = 3  # DDPG-KNN映射的空间维度
 axis = []
-points_in_each_axis = round(len(movie_id) ** (1.0 / dim))
+points_in_each_axis = np.ceil(len(movie_id) ** (1.0 / dim))+1
 for i in range(dim):
     axis.append(list(np.linspace(0, 1, points_in_each_axis)))
 
@@ -75,7 +75,7 @@ def normalize(rating):
 
 MAX_SEQ_LENGTH = 32
 agent = DDPG(state_dim=128 + 1, action_dim=int(dim), action_bound=1,
-             max_seq_length=MAX_SEQ_LENGTH, batch_size=128, discount_factor=1)
+             max_seq_length=MAX_SEQ_LENGTH, batch_size=4, discount_factor=1)
 
 print('Start training.')
 start_time = datetime.datetime.now()
@@ -139,7 +139,7 @@ print('Begin test.')
 start_time = datetime.datetime.now()
 # TEST阶段
 result = []
-K = round(0.1*len(movie_id))
+K = int(np.ceil(1*len(movie_id)))
 N = 30  # top-N evaluation
 test_count = 0
 for idx1 in test_id:  # 针对test_id中的每个用户

@@ -54,7 +54,7 @@ def get_movie_idx(input_id):
 
 
 # 根据item_id找出相应的动作
-dim = 2  # DDPG-KNN映射的空间维度
+dim = 3  # DDPG-KNN映射的空间维度
 axis = []
 points_in_each_axis = round(len(movie_id) ** (1.0 / dim))
 for i in range(dim):
@@ -181,7 +181,10 @@ for idx1 in test_id:  # 针对test_id中的每个用户
             # 推荐Q值最高的N个
             critic_value = critic_value.flatten()
             temp_idx = np.argsort(-critic_value)[:N]  # 找距离最近的N个
-            recommend_idx = [search_idx[int(_)] for _ in temp_idx]
+            recommend_idx = []
+            for _ in temp_idx:
+                if _<len(movie_id):
+                    recommend_idx.append(int(_))
             recommend_movie = [movie_id[int(_)] for _ in recommend_idx]  # 转为list
             # 针对每个推荐item评估下
             if row['rating'] > 3.5:

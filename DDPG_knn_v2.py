@@ -54,7 +54,7 @@ def get_movie_idx(input_id):
 
 
 # 根据item_id找出相应的动作
-dim = 3  # DDPG-KNN映射的空间维度
+dim = 2  # DDPG-KNN映射的空间维度
 axis = []
 points_in_each_axis = round(len(movie_id) ** (1.0 / dim))
 for i in range(dim):
@@ -102,7 +102,7 @@ for id1 in train_id:
         current_state_length = i - 1
         next_state = state[:i]
         next_state_length = i
-        current_reward = (reward[i])
+        current_reward = normalize(reward[i])
         current_action = action[i]
         if current_state_length > MAX_SEQ_LENGTH:
             current_state = current_state[-MAX_SEQ_LENGTH:]

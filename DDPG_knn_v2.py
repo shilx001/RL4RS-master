@@ -6,6 +6,8 @@ from ddpg import *
 import math
 import pickle
 from funk_svd import SVD
+import itertools
+import pyflann
 
 # feature改为index
 
@@ -45,30 +47,24 @@ def get_feature(input_id):
     return item_matrix[item_index]
 
 
+def get_movie_idx(input_id):
+    # 根据输入的movie_id得到存储的index
+    idx = np.where(movie_id == input_id)
+    return int(idx[0])
+
+
 # 根据item_id找出相应的动作
-BASE = 5  # 输出动作的进制
-output_action_dim = int(np.ceil(math.log(len(movie_id), BASE)))  # DDPG输出动作的维度
-output_action_bound = 1.0 / BASE
+dim = 3  # DDPG-KNN映射的空间维度
+axis = []
+points_in_each_axis = round(len(movie_id) ** (1.0 / dim))
+for i in range(dim):
+    axis.append(list(np.linspace(0, 1, points_in_each_axis)))
 
-
-def action_mapping(item_id):
-    # 根据movie的id返回其转换的连续型变量
-    output_action = []
-    item_id = np.where(movie_id == item_id)
-    item_id = item_id[0]
-    while item_id / BASE > 0:
-        output_action.append(item_id % BASE)
-        item_id = item_id // BASE
-    output_action = np.hstack(
-        (np.array(output_action).flatten(), np.zeros([int(output_action_dim) - len(output_action)])))
-    return output_action  # 针对不满的要补0
-
-
-def get_movie(movie_mask):
-    # 根据电影编码得到电影的index
-    # movie_mask: [N, output_action_dim]
-    d = BASE ** np.arange(output_action_dim)
-    return np.dot(movie_mask, d)
+space = []  # action space for each movie.
+for i in itertools.product(*axis):
+    space.append(list(i))
+space = np.reshape(space, [-1, dim])
+flann = pyflann.FLANN()
 
 
 def normalize(rating):
@@ -77,15 +73,9 @@ def normalize(rating):
     return -1 + 2 * (rating - min_rating) / (max_rating - min_rating)
 
 
-action_mask_set = []
-# 针对每个movie构建action mask集合
-for idx in movie_id:
-    action_mask_set.append(action_mapping(idx))
-
 MAX_SEQ_LENGTH = 32
-agent = DDPG(state_dim=128 + 1, action_dim=int(output_action_dim), action_bound=output_action_bound,
+agent = DDPG(state_dim=128 + 1, action_dim=int(dim), action_bound=1,
              max_seq_length=MAX_SEQ_LENGTH, batch_size=128, discount_factor=1)
-
 
 print('Start training.')
 start_time = datetime.datetime.now()
@@ -104,7 +94,8 @@ for id1 in train_id:
         current_state = np.hstack((movie_feature.flatten(), row['rating']))
         state.append(current_state)
         reward.append(row['rating'])
-        action.append(action_mapping(row['i_id']))
+        current_movie_idx = get_movie_idx(row['i_id'])
+        action.append(space[current_movie_idx])
     # 针对每个state,把reward
     for i in range(2, len(state)):
         current_state = state[:i - 1]  # 到目前为止所有的state
@@ -143,15 +134,12 @@ print('Training time(seconds):', (end_time - start_time).seconds)
 pickle.dump(actor_loss_list, open('actor_loss_v2', mode='wb'))
 pickle.dump(critic_loss_list, open('critic_loss_v2', mode='wb'))
 
-
-
-
 print('Begin test.')
 
 start_time = datetime.datetime.now()
 # TEST阶段
 result = []
-K = 100
+K = round(0.1*len(movie_id))
 N = 30  # top-N evaluation
 test_count = 0
 for idx1 in test_id:  # 针对test_id中的每个用户
@@ -175,12 +163,10 @@ for idx1 in test_id:  # 针对test_id中的每个用户
                 temp_state = temp_state[-MAX_SEQ_LENGTH:]
             proto_action = agent.get_action(temp_state, len(temp_state))  # DDPG-knn输出的Proto action
             # 根据proto_action找K个最近的动作
-            dist = np.sqrt(np.sum(
-                (np.array(action_mask_set).reshape([-1, int(output_action_dim)]) - proto_action.flatten()) ** 2,
-                axis=1))
-            sorted_index = np.argsort(dist)  # 距离从小到大排列
-            nearest_index = sorted_index[:K]  # 找k个距离最近的动作，这个index是动作里面的index
+            search_idx, _ = flann.nn(space, np.reshape(proto_action, [dim, ]), K, algorithm='kdtree')  # [1, K]
             # 评估nearest_index的value
+            search_idx = list(search_idx.flatten())
+            search_action = [space[i] for i in search_idx]
             eval_state = []
             eval_length = []
             eval_action = []
@@ -189,17 +175,14 @@ for idx1 in test_id:  # 针对test_id中的每个用户
             if len(temp_state) < MAX_SEQ_LENGTH:  # 如果当前的小于max_length，就补0
                 padding_mat = np.zeros([MAX_SEQ_LENGTH - len(temp_state), 128 + 1])
                 temp_state = np.vstack((np.array(temp_state), padding_mat))
-            for idx3 in nearest_index:
-                eval_state.append(temp_state)
-                eval_action.append(np.array(action_mask_set[idx3]))
-                eval_length.append(temp_length)
-            critic_value = agent.eval_critic(eval_state, eval_length, eval_action)  # 评估所有动作里的
+            eval_state = np.tile(temp_state, [K, 1])
+            eval_length = np.tile(temp_length, [K, 1])
+            critic_value = agent.eval_critic(eval_state, eval_length, search_action)  # 评估所有动作里的
             # 推荐Q值最高的N个
             critic_value = critic_value.flatten()
             temp_idx = np.argsort(-critic_value)[:N]  # 找距离最近的N个
-            recommend_mask = [action_mask_set[_] for _ in nearest_index[temp_idx]]  # 最近index中Q值最大的几个
-            recommend_index = get_movie(np.reshape(recommend_mask, [-1, output_action_dim]))
-            recommend_movie = [movie_id[int(_)] for _ in recommend_index]  # 转为list
+            recommend_idx = [search_idx[int(_)] for _ in temp_idx]
+            recommend_movie = [movie_id[int(_)] for _ in recommend_idx]  # 转为list
             # 针对每个推荐item评估下
             if row['rating'] > 3.5:
                 relevant += 1

@@ -75,7 +75,7 @@ def normalize(rating):
 
 MAX_SEQ_LENGTH = 32
 agent = DDPG(state_dim=128 + 1, action_dim=int(dim), action_bound=1,
-             max_seq_length=MAX_SEQ_LENGTH, batch_size=4, discount_factor=1)
+             max_seq_length=MAX_SEQ_LENGTH, batch_size=128, discount_factor=1)
 
 print('Start training.')
 start_time = datetime.datetime.now()
@@ -102,7 +102,7 @@ for id1 in train_id:
         current_state_length = i - 1
         next_state = state[:i]
         next_state_length = i
-        current_reward = normalize(reward[i])
+        current_reward = reward[i]
         current_action = action[i]
         if current_state_length > MAX_SEQ_LENGTH:
             current_state = current_state[-MAX_SEQ_LENGTH:]
@@ -139,7 +139,8 @@ print('Begin test.')
 start_time = datetime.datetime.now()
 # TEST阶段
 result = []
-K = int(np.ceil(1*len(movie_id)))
+ratio = 0.1
+K = int(np.ceil(ratio*len(movie_id)))
 N = 30  # top-N evaluation
 test_count = 0
 for idx1 in test_id:  # 针对test_id中的每个用户

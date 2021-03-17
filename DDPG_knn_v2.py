@@ -13,8 +13,9 @@ import pyflann
 
 # DDPG-KNN
 np.random.seed(1)
-data = pd.read_csv('ml-latest-small/ratings.csv', header=0, names=['u_id', 'i_id', 'rating', 'timestep'])
-# data = pd.read_table('ml-1m/ml-1m/ratings.dat', sep='::',  names=['u_id', 'i_id', 'rating', 'timestep'])
+#data = pd.read_csv('ml-latest-small/ratings.csv', header=0, names=['u_id', 'i_id', 'rating', 'timestep'])
+data = pd.read_table('ml-1m/ml-1m/ratings.dat', sep='::',  names=['u_id', 'i_id', 'rating', 'timestep'])
+#data = data[:100]
 user_idx = data['u_id'].unique()  # id for all the user
 np.random.shuffle(user_idx)
 train_id = user_idx[:int(len(user_idx) * 0.8)]
@@ -63,7 +64,7 @@ for i in range(dim):
 space = []  # action space for each movie.
 for i in itertools.product(*axis):
     space.append(list(i))
-space = np.reshape(space, [-1, dim])
+space = np.float32(np.reshape(space, [-1, dim]))
 flann = pyflann.FLANN()
 
 
@@ -134,6 +135,38 @@ print('Training time(seconds):', (end_time - start_time).seconds)
 pickle.dump(actor_loss_list, open('actor_loss_v2', mode='wb'))
 pickle.dump(critic_loss_list, open('critic_loss_v2', mode='wb'))
 
+def evaluate(recommend_id, item_id, rating, top_N):
+    '''
+    evalute the recommend result for each user.
+    :param recommend_id: the recommend_result for each item, a list that contains the results for each item.
+    :param item_id: item id.
+    :param rating: user's rating on item.
+    :param top_N: N, a real number of N for evaluation.
+    :return: reward@N, recall@N, MRR@N
+    '''
+    session_length = len(recommend_id)
+    relevant = 0
+    recommend_relevant = 0
+    selected = 0
+    output_reward = 0
+    mrr = 0
+    for ti in range(session_length):
+        current_recommend_id = list(recommend_id[ti])[:top_N]
+        current_item = item_id[ti]
+        current_rating = rating[ti]
+        if current_rating > 3.5:
+            relevant += 1
+            if current_item in current_recommend_id:
+                recommend_relevant += 1
+        if current_item in current_recommend_id:
+            selected += 1
+            output_reward += normalize(current_rating)
+            rank = current_recommend_id.index(current_item)
+            mrr += 1.0 / (rank + 1)
+    recall = recommend_relevant / relevant if relevant is not 0 else 0
+    precision = recommend_relevant / selected if selected is not 0 else 0
+    return output_reward / session_length, precision, recall, mrr / session_length
+
 print('Begin test.')
 
 start_time = datetime.datetime.now()
@@ -152,6 +185,9 @@ for idx1 in test_id:  # 针对test_id中的每个用户
     selected = 0
     r = 0
     all_state = []
+    all_recommend = []
+    all_item = []
+    all_rating = []
     for idx2, row in user_record.iterrows():  # 针对每个电影记录
         user_rating_list.append(row['rating'])
         current_movie = row['i_id']
@@ -162,7 +198,7 @@ for idx1 in test_id:  # 针对test_id中的每个用户
             temp_state = all_state[:-1]  # 当前的特征list,不包含倒数第一个
             if len(temp_state) > MAX_SEQ_LENGTH:
                 temp_state = temp_state[-MAX_SEQ_LENGTH:]
-            proto_action = agent.get_action(temp_state, len(temp_state))  # DDPG-knn输出的Proto action
+            proto_action = np.float32(agent.get_action(temp_state, len(temp_state)))  # DDPG-knn输出的Proto action
             # 根据proto_action找K个最近的动作
             search_idx, _ = flann.nn(space, np.reshape(proto_action, [dim, ]), K, algorithm='kdtree')  # [1, K]
             # 评估nearest_index的value
@@ -184,26 +220,29 @@ for idx1 in test_id:  # 针对test_id中的每个用户
             temp_idx = np.argsort(-critic_value)[:N]  # 找距离最近的N个
             recommend_idx = []
             for _ in temp_idx:
-                if _<len(movie_id):
+                if _ < len(movie_id):
                     recommend_idx.append(int(_))
             recommend_movie = [movie_id[int(_)] for _ in recommend_idx]  # 转为list
             # 针对每个推荐item评估下
-            if row['rating'] > 3.5:
-                relevant += 1
-                if row['i_id'] in recommend_movie:
-                    recommend_relevant += 1
-            if row['i_id'] in recommend_movie:
-                selected += 1
-                r += normalize(row['rating'])
+            all_recommend.append(recommend_movie)
+            all_item.append(row['i_id'])
+            all_rating.append(row['rating'])
+    reward_10, precision_10, recall_10, mkk_10 = evaluate(all_recommend, all_item, all_rating, 10)
+    reward_30, precision_30, recall_30, mkk_30 = evaluate(all_recommend, all_item, all_rating, 30)
     test_count += 1
-    precision = recommend_relevant / selected if selected is not 0 else 0
-    recall = recommend_relevant / relevant if relevant is not 0 else 0
-    print('Test user #: ', test_count, '/', len(test_id))
-    print('Precision: %.5f Recall: %.5f' % (precision, recall))
-    result.append([r, precision, recall])
+    print('Test user #', test_count, '/', len(test_id))
+    print('Reward@10: %.4f, Precision@10: %.4f, Recall@10: %.4f, MRR@10: %4f'
+          % (reward_10, precision_10, recall_10, mkk_10))
+    print('Reward@30: %.4f, Precision@30: %.4f, Recall@30: %.4f, MRR@30: %4f'
+          % (reward_30, precision_30, recall_30, mkk_30))
+    result.append([reward_10, precision_10, recall_10, mkk_10, reward_30, precision_30, recall_30, mkk_30])
+
 
 pickle.dump(result, open('ddpg_knn', mode='wb'))
 print('Result:')
-print(np.mean(np.array(result).reshape([-1, 3]), axis=0))
+display = np.mean(np.array(result).reshape([-1, 8]), axis=0)
+for num in display:
+    print('%.5f' % num)
+
 end_time = datetime.datetime.now()
 print('Testing time(seconds):', (end_time - start_time).seconds)
